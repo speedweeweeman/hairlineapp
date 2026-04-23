@@ -26,6 +26,7 @@ function InitialLayout() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="(auth)" />
+      <Stack.Screen name="compare" options={{ presentation: 'modal' }} />
     </Stack>
   );
 }

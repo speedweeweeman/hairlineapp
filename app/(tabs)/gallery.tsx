@@ -18,6 +18,7 @@ import { supabase } from '@/lib/supabase';
 type Scan = {
   id: string;
   image_url: string;
+  normalized_image_url: string | null;
   created_at: string;
   type: string;
 };
@@ -30,12 +31,14 @@ export default function GalleryScreen() {
   const [scans, setScans] = useState<Scan[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const fetchScans = useCallback(async () => {
     if (!user) return;
     const { data, error } = await supabase
       .from('scans')
-      .select('id, image_url, created_at, type')
+      .select('id, image_url, normalized_image_url, created_at, type')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
@@ -51,6 +54,27 @@ export default function GalleryScreen() {
   const onRefresh = () => {
     setRefreshing(true);
     fetchScans();
+  };
+
+  const toggleCompareMode = () => {
+    setCompareMode((m) => !m);
+    setSelectedIds([]);
+  };
+
+  const handleScanPress = (id: string) => {
+    if (!compareMode) return;
+    if (selectedIds.includes(id)) {
+      setSelectedIds(selectedIds.filter((s) => s !== id));
+    } else if (selectedIds.length < 2) {
+      setSelectedIds([...selectedIds, id]);
+    }
+  };
+
+  const startComparison = () => {
+    if (selectedIds.length !== 2) return;
+    router.push(`/compare?before=${selectedIds[0]}&after=${selectedIds[1]}`);
+    setCompareMode(false);
+    setSelectedIds([]);
   };
 
   const formatDate = (iso: string) => {
@@ -70,8 +94,31 @@ export default function GalleryScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>My Scans</Text>
-        <Text style={styles.count}>{scans.length} total</Text>
+        <View style={styles.headerRight}>
+          {scans.length >= 2 && (
+            <TouchableOpacity onPress={toggleCompareMode} style={styles.compareToggle}>
+              <Text style={[styles.compareToggleText, compareMode && styles.compareToggleActive]}>
+                {compareMode ? 'Cancel' : 'Compare'}
+              </Text>
+            </TouchableOpacity>
+          )}
+          {!compareMode && (
+            <Text style={styles.count}>{scans.length} total</Text>
+          )}
+        </View>
       </View>
+
+      {compareMode && (
+        <View style={styles.compareBanner}>
+          <Text style={styles.compareBannerText}>
+            {selectedIds.length === 0
+              ? 'Tap a scan to select (pick 2)'
+              : selectedIds.length === 1
+              ? 'Now tap a second scan'
+              : 'Ready to compare'}
+          </Text>
+        </View>
+      )}
 
       {scans.length === 0 ? (
         <View style={styles.emptyContainer}>
@@ -84,37 +131,71 @@ export default function GalleryScreen() {
           </TouchableOpacity>
         </View>
       ) : (
-        <FlatList
-          data={scans}
-          keyExtractor={(item) => item.id}
-          numColumns={2}
-          contentContainerStyle={styles.grid}
-          columnWrapperStyle={styles.row}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor="#0a7ea4"
-            />
-          }
-          renderItem={({ item }) => (
-            <View style={styles.scanItem}>
-              <Image
-                source={{ uri: item.image_url }}
-                style={styles.scanImage}
-                resizeMode="cover"
+        <>
+          <FlatList
+            data={scans}
+            keyExtractor={(item) => item.id}
+            numColumns={2}
+            contentContainerStyle={styles.grid}
+            columnWrapperStyle={styles.row}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor="#0a7ea4"
               />
-              <View style={styles.scanMeta}>
-                <Text style={styles.scanDate}>{formatDate(item.created_at)}</Text>
-                {item.type === 'baseline' && (
-                  <View style={styles.baselineBadge}>
-                    <Text style={styles.baselineBadgeText}>Baseline</Text>
+            }
+            renderItem={({ item }) => {
+              const selectionIndex = selectedIds.indexOf(item.id);
+              const isSelected = selectionIndex !== -1;
+
+              return (
+                <TouchableOpacity
+                  style={[styles.scanItem, isSelected && styles.scanItemSelected]}
+                  onPress={() => handleScanPress(item.id)}
+                  activeOpacity={compareMode ? 0.7 : 1}>
+                  <Image
+                    source={{ uri: item.image_url }}
+                    style={styles.scanImage}
+                    resizeMode="cover"
+                  />
+                  {/* Selection number badge */}
+                  {isSelected && (
+                    <View style={styles.selectionBadge}>
+                      <Text style={styles.selectionBadgeText}>{selectionIndex + 1}</Text>
+                    </View>
+                  )}
+                  {/* Normalized indicator */}
+                  {item.normalized_image_url && (
+                    <View style={styles.alignedDot} />
+                  )}
+                  <View style={styles.scanMeta}>
+                    <Text style={styles.scanDate}>{formatDate(item.created_at)}</Text>
+                    {item.type === 'baseline' && (
+                      <View style={styles.baselineBadge}>
+                        <Text style={styles.baselineBadgeText}>Baseline</Text>
+                      </View>
+                    )}
                   </View>
-                )}
-              </View>
+                </TouchableOpacity>
+              );
+            }}
+          />
+
+          {/* Compare action bar */}
+          {compareMode && (
+            <View style={styles.compareBar}>
+              <TouchableOpacity
+                style={[styles.compareButton, selectedIds.length !== 2 && styles.compareButtonDisabled]}
+                onPress={startComparison}
+                disabled={selectedIds.length !== 2}>
+                <Text style={styles.compareButtonText}>
+                  {selectedIds.length === 2 ? 'Compare Selected' : `Select ${2 - selectedIds.length} more`}
+                </Text>
+              </TouchableOpacity>
             </View>
           )}
-        />
+        </>
       )}
     </SafeAreaView>
   );
@@ -134,7 +215,7 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'baseline',
+    alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: 12,
@@ -144,13 +225,49 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#fff',
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   count: {
     fontSize: 14,
     color: '#555',
   },
+  compareToggle: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  compareToggleText: {
+    fontSize: 14,
+    color: '#0a7ea4',
+    fontWeight: '500',
+  },
+  compareToggleActive: {
+    color: '#ff6b6b',
+  },
+  compareBanner: {
+    marginHorizontal: 16,
+    marginBottom: 8,
+    backgroundColor: '#0a7ea415',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: '#0a7ea430',
+  },
+  compareBannerText: {
+    color: '#0a7ea4',
+    fontSize: 13,
+    fontWeight: '500',
+    textAlign: 'center',
+  },
   grid: {
     paddingHorizontal: 16,
-    paddingBottom: 24,
+    paddingBottom: 100,
   },
   row: {
     gap: 16,
@@ -162,9 +279,38 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: '#1a1a1a',
   },
+  scanItemSelected: {
+    borderWidth: 2,
+    borderColor: '#0a7ea4',
+  },
   scanImage: {
     width: ITEM_SIZE,
     height: ITEM_SIZE * 1.1,
+  },
+  selectionBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#0a7ea4',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  selectionBadgeText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  alignedDot: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#4ade80',
   },
   scanMeta: {
     padding: 10,
@@ -214,6 +360,32 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
   },
   emptyCTAText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  compareBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+    paddingBottom: 32,
+    paddingTop: 12,
+    backgroundColor: '#0a0a0a',
+    borderTopWidth: 1,
+    borderTopColor: '#1a1a1a',
+  },
+  compareButton: {
+    backgroundColor: '#0a7ea4',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  compareButtonDisabled: {
+    backgroundColor: '#1a1a1a',
+  },
+  compareButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
