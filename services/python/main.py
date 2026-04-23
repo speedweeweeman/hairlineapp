@@ -1,4 +1,3 @@
-import io
 import math
 import httpx
 import numpy as np
@@ -26,6 +25,11 @@ app.add_middleware(
 
 
 class NormalizeRequest(BaseModel):
+    scan_id: str
+    image_url: str
+
+
+class AnalyzeRequest(BaseModel):
     scan_id: str
     image_url: str
 
@@ -133,3 +137,76 @@ async def normalize_image(req: NormalizeRequest):
     }
 
     return {"normalized_image_url": normalized_url, "landmarks_json": landmarks_json}
+
+
+def _detect_hairline(img: np.ndarray) -> np.ndarray:
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+    edges = cv2.Canny(blurred, 20, 60)
+
+    search_h = int(h * 0.70)
+    hairline_y = np.zeros(w, dtype=float)
+
+    for x in range(w):
+        pts = np.where(edges[:search_h, x] > 0)[0]
+        if len(pts) > 0:
+            hairline_y[x] = pts[-1] / h
+        else:
+            # fall back to first column pixel brighter than skin threshold
+            light = np.where(blurred[:search_h, x] > 80)[0]
+            hairline_y[x] = light[0] / h if len(light) > 0 else 0.20
+
+    k = max(1, w // 12)
+    return np.convolve(hairline_y, np.ones(k) / k, mode="same")
+
+
+@app.post("/analyze-hairline")
+async def analyze_hairline(req: AnalyzeRequest):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(req.image_url)
+    if r.status_code != 200:
+        raise HTTPException(400, f"Failed to download image: HTTP {r.status_code}")
+
+    nparr = np.frombuffer(r.content, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Could not decode image")
+
+    w = img.shape[1]
+    hairline = _detect_hairline(img)
+
+    # center hairline y (middle 20% of width)
+    cx1, cx2 = int(w * 0.40), int(w * 0.60)
+    center_y = float(np.mean(hairline[cx1:cx2]))
+
+    # temple hairline y (10-25% from each side)
+    left_y = float(np.mean(hairline[int(w * 0.10):int(w * 0.25)]))
+    right_y = float(np.mean(hairline[int(w * 0.75):int(w * 0.90)]))
+
+    left_rec = max(0.0, left_y - center_y)
+    right_rec = max(0.0, right_y - center_y)
+    temple_depth = round((left_rec + right_rec) / 2.0, 3)
+
+    denom = max(left_rec + right_rec, 1e-4)
+    symmetry = round(max(0.0, 1.0 - abs(left_rec - right_rec) / denom), 2)
+    forehead_ratio = round(float(np.mean(hairline)), 3)
+
+    if temple_depth < 0.06:
+        status, confidence = "stable", 0.85
+    elif temple_depth < 0.15:
+        status, confidence = "slight_recession", 0.80
+    else:
+        status, confidence = "moderate", 0.75
+
+    metrics = {
+        "temple_depth": temple_depth,
+        "symmetry": symmetry,
+        "forehead_ratio": forehead_ratio,
+    }
+
+    supabase_client.table("scans").update(
+        {"hairline_status": status, "metrics_json": metrics}
+    ).eq("id", req.scan_id).execute()
+
+    return {"status": status, "confidence": round(confidence, 2), "metrics": metrics}

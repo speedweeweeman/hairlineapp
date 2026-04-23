@@ -21,9 +21,21 @@ type Scan = {
   normalized_image_url: string | null;
   created_at: string;
   type: string;
+  hairline_status: string | null;
 };
 
 const ITEM_SIZE = (Dimensions.get('window').width - 48) / 2;
+
+const STATUS_COLORS: Record<string, string> = {
+  stable: '#4ade80',
+  slight_recession: '#facc15',
+  moderate: '#f87171',
+};
+const STATUS_LABELS: Record<string, string> = {
+  stable: 'Stable',
+  slight_recession: 'Slight',
+  moderate: 'Moderate',
+};
 
 export default function GalleryScreen() {
   const { user } = useAuth();
@@ -38,7 +50,7 @@ export default function GalleryScreen() {
     if (!user) return;
     const { data, error } = await supabase
       .from('scans')
-      .select('id, image_url, normalized_image_url, created_at, type')
+      .select('id, image_url, normalized_image_url, created_at, type, hairline_status')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
@@ -62,12 +74,15 @@ export default function GalleryScreen() {
   };
 
   const handleScanPress = (id: string) => {
-    if (!compareMode) return;
-    if (selectedIds.includes(id)) {
-      setSelectedIds(selectedIds.filter((s) => s !== id));
-    } else if (selectedIds.length < 2) {
-      setSelectedIds([...selectedIds, id]);
+    if (compareMode) {
+      if (selectedIds.includes(id)) {
+        setSelectedIds(selectedIds.filter((s) => s !== id));
+      } else if (selectedIds.length < 2) {
+        setSelectedIds([...selectedIds, id]);
+      }
+      return;
     }
+    router.push(`/scan/${id}`);
   };
 
   const startComparison = () => {
@@ -153,7 +168,7 @@ export default function GalleryScreen() {
                 <TouchableOpacity
                   style={[styles.scanItem, isSelected && styles.scanItemSelected]}
                   onPress={() => handleScanPress(item.id)}
-                  activeOpacity={compareMode ? 0.7 : 1}>
+                  activeOpacity={0.7}>
                   <Image
                     source={{ uri: item.image_url }}
                     style={styles.scanImage}
@@ -171,11 +186,17 @@ export default function GalleryScreen() {
                   )}
                   <View style={styles.scanMeta}>
                     <Text style={styles.scanDate}>{formatDate(item.created_at)}</Text>
-                    {item.type === 'baseline' && (
+                    {item.hairline_status ? (
+                      <View style={[styles.statusBadge, { backgroundColor: STATUS_COLORS[item.hairline_status] + '25' }]}>
+                        <Text style={[styles.statusBadgeText, { color: STATUS_COLORS[item.hairline_status] }]}>
+                          {STATUS_LABELS[item.hairline_status]}
+                        </Text>
+                      </View>
+                    ) : item.type === 'baseline' ? (
                       <View style={styles.baselineBadge}>
                         <Text style={styles.baselineBadgeText}>Baseline</Text>
                       </View>
-                    )}
+                    ) : null}
                   </View>
                 </TouchableOpacity>
               );
@@ -331,6 +352,17 @@ const styles = StyleSheet.create({
   baselineBadgeText: {
     fontSize: 10,
     color: '#0a7ea4',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  statusBadge: {
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  statusBadgeText: {
+    fontSize: 10,
     fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.5,

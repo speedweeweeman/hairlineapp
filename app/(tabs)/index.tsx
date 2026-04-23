@@ -11,12 +11,18 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '@/context/auth';
 import { supabase } from '@/lib/supabase';
 
-type ScanCount = { count: number; lastDate: string | null };
+const STATUS_INFO: Record<string, { label: string; color: string }> = {
+  stable: { label: 'Stable', color: '#4ade80' },
+  slight_recession: { label: 'Slight Recession', color: '#facc15' },
+  moderate: { label: 'Moderate Recession', color: '#f87171' },
+};
+
+type ScanCount = { count: number; lastDate: string | null; latestStatus: string | null };
 
 export default function HomeScreen() {
   const { user, signOut } = useAuth();
   const router = useRouter();
-  const [scanData, setScanData] = useState<ScanCount>({ count: 0, lastDate: null });
+  const [scanData, setScanData] = useState<ScanCount>({ count: 0, lastDate: null, latestStatus: null });
 
   useEffect(() => {
     loadScanData();
@@ -26,14 +32,16 @@ export default function HomeScreen() {
     if (!user) return;
     const { data, error } = await supabase
       .from('scans')
-      .select('created_at')
+      .select('created_at, hairline_status')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
     if (!error && data) {
+      const latestAnalyzed = data.find((s) => s.hairline_status);
       setScanData({
         count: data.length,
         lastDate: data[0]?.created_at ?? null,
+        latestStatus: latestAnalyzed?.hairline_status ?? null,
       });
     }
   };
@@ -71,6 +79,21 @@ export default function HomeScreen() {
             <Text style={styles.cardSub}>No scans yet</Text>
           )}
         </View>
+
+        {scanData.latestStatus && STATUS_INFO[scanData.latestStatus] && (
+          <View style={[styles.statusCard, { borderColor: STATUS_INFO[scanData.latestStatus].color + '40' }]}>
+            <View style={[styles.statusDot, { backgroundColor: STATUS_INFO[scanData.latestStatus].color }]} />
+            <View>
+              <Text style={styles.statusCardLabel}>Hairline Status</Text>
+              <Text style={[styles.statusCardValue, { color: STATUS_INFO[scanData.latestStatus].color }]}>
+                {STATUS_INFO[scanData.latestStatus].label}
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => router.push('/(tabs)/gallery')} style={styles.statusCardArrow}>
+              <Text style={styles.statusCardArrowText}>›</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         <TouchableOpacity
           style={styles.primaryButton}
@@ -185,6 +208,41 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '500',
+  },
+  statusCard: {
+    backgroundColor: '#111',
+    borderRadius: 16,
+    padding: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    borderWidth: 1,
+  },
+  statusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  statusCardLabel: {
+    fontSize: 11,
+    color: '#555',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  statusCardValue: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  statusCardArrow: {
+    marginLeft: 'auto',
+    padding: 4,
+  },
+  statusCardArrowText: {
+    color: '#444',
+    fontSize: 22,
+    lineHeight: 24,
   },
   infoBox: {
     backgroundColor: '#111',
