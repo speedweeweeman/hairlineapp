@@ -1,8 +1,12 @@
 import math
+import os
+import urllib.request
 import httpx
 import numpy as np
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,9 +15,23 @@ from supabase import create_client
 SUPABASE_URL = "https://ogzwekwzpadussvthssw.supabase.co"
 SUPABASE_KEY = "sb_publishable_pJRqMr57af1eufD34V9KPw_HeLiU2XB"
 OUTPUT_SIZE = 512
+MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "face_landmarker.task")
+MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+
+if not os.path.exists(MODEL_PATH):
+    print("Downloading face landmarker model...")
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    print("Model downloaded.")
+
+_detector = mp_vision.FaceLandmarker.create_from_options(
+    mp_vision.FaceLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
+        num_faces=1,
+        min_face_detection_confidence=0.5,
+    )
+)
 
 supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-mp_face_mesh = mp.solutions.face_mesh
 
 app = FastAPI()
 app.add_middleware(
@@ -56,18 +74,13 @@ async def normalize_image(req: NormalizeRequest):
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     # Detect face landmarks
-    with mp_face_mesh.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-    ) as face_mesh:
-        results = face_mesh.process(img_rgb)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(img_rgb))
+    results = _detector.detect(mp_image)
 
-    if not results.multi_face_landmarks:
+    if not results.face_landmarks:
         raise HTTPException(422, "No face detected in image")
 
-    lm = results.multi_face_landmarks[0].landmark
+    lm = results.face_landmarks[0]
 
     # Compute eye centers using standard iris/eye contour landmarks
     LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
