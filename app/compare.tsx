@@ -13,22 +13,6 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { supabase } from '@/lib/supabase';
-import { PYTHON_SERVICE_URL } from '@/constants/config';
-
-async function pyFetch(path: string, body: object): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-  try {
-    return await fetch(`${PYTHON_SERVICE_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IMAGE_HEIGHT = Math.round(SCREEN_WIDTH * 0.75);
@@ -41,7 +25,7 @@ type ScanData = {
   created_at: string;
 };
 
-type Status = 'loading' | 'normalizing' | 'ready' | 'error';
+type Status = 'loading' | 'ready' | 'error';
 
 export default function CompareScreen() {
   const { before: beforeId, after: afterId } = useLocalSearchParams<{
@@ -84,10 +68,10 @@ export default function CompareScreen() {
 
   useEffect(() => {
     if (!beforeId || !afterId) return;
-    loadAndNormalize();
+    loadScans();
   }, [beforeId, afterId]);
 
-  const loadAndNormalize = async () => {
+  const loadScans = async () => {
     setStatus('loading');
     setStatusText('Loading scans…');
 
@@ -102,56 +86,9 @@ export default function CompareScreen() {
       return;
     }
 
-    let b = data.find((s) => s.id === beforeId)!;
-    let a = data.find((s) => s.id === afterId)!;
-
-    const needsNormalization = !b.normalized_image_url || !a.normalized_image_url;
-
-    if (needsNormalization) {
-      setStatus('normalizing');
-      setStatusText('Aligning images…');
-
-      if (!b.normalized_image_url) {
-        b = await normalizeScan(b) ?? b;
-      }
-      if (!a.normalized_image_url) {
-        a = await normalizeScan(a) ?? a;
-      }
-    }
-
-    setBeforeScan(b);
-    setAfterScan(a);
+    setBeforeScan(data.find((s) => s.id === beforeId)!);
+    setAfterScan(data.find((s) => s.id === afterId)!);
     setStatus('ready');
-  };
-
-  const normalizeScan = async (scan: ScanData): Promise<ScanData | null> => {
-    try {
-      const res = await pyFetch('/normalize-image', {
-        scan_id: scan.id,
-        image_url: scan.image_url,
-      });
-
-      if (!res.ok) {
-        // No face detected or service error — fall back to original image
-        return scan;
-      }
-
-      const json = await res.json();
-
-      // Persist to Supabase
-      await supabase
-        .from('scans')
-        .update({
-          normalized_image_url: json.normalized_image_url,
-          landmarks_json: json.landmarks_json,
-        })
-        .eq('id', scan.id);
-
-      return { ...scan, normalized_image_url: json.normalized_image_url, landmarks_json: json.landmarks_json };
-    } catch {
-      // Service unreachable — fall back to original
-      return scan;
-    }
   };
 
   const formatDate = (iso: string) => {
@@ -182,23 +119,17 @@ export default function CompareScreen() {
         )}
       </View>
 
-      {/* Loading / Normalizing */}
-      {(status === 'loading' || status === 'normalizing') && (
+      {status === 'loading' && (
         <View style={styles.centered}>
           <ActivityIndicator color="#0a7ea4" size="large" />
           <Text style={styles.statusText}>{statusText}</Text>
-          {status === 'normalizing' && (
-            <Text style={styles.statusSub}>
-              MediaPipe is aligning your scans to the same face position.
-            </Text>
-          )}
         </View>
       )}
 
       {status === 'error' && (
         <View style={styles.centered}>
           <Text style={styles.errorText}>Could not load scans.</Text>
-          <TouchableOpacity onPress={loadAndNormalize} style={styles.retryButton}>
+          <TouchableOpacity onPress={loadScans} style={styles.retryButton}>
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
         </View>
@@ -255,13 +186,13 @@ export default function CompareScreen() {
           </View>
 
           {/* Alignment badge */}
-          <View style={styles.badgeRow}>
-            <View style={[styles.badge, isAligned ? styles.badgeAligned : styles.badgeOriginal]}>
-              <Text style={styles.badgeText}>
-                {isAligned ? 'Face-aligned' : 'Original (Python service offline)'}
-              </Text>
+          {isAligned && (
+            <View style={styles.badgeRow}>
+              <View style={[styles.badge, styles.badgeAligned]}>
+                <Text style={styles.badgeText}>Face-aligned</Text>
+              </View>
             </View>
-          </View>
+          )}
 
           <Text style={styles.hint}>Drag the divider left or right to compare</Text>
         </View>
@@ -314,12 +245,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     marginTop: 8,
-  },
-  statusSub: {
-    color: '#555',
-    fontSize: 13,
-    textAlign: 'center',
-    lineHeight: 18,
   },
   errorText: {
     color: '#ff4444',
@@ -423,9 +348,6 @@ const styles = StyleSheet.create({
   },
   badgeAligned: {
     backgroundColor: '#0a7ea420',
-  },
-  badgeOriginal: {
-    backgroundColor: '#ff444420',
   },
   badgeText: {
     fontSize: 12,
