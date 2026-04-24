@@ -241,6 +241,21 @@ export default function ScanDetailScreen() {
                 </View>
 
                 <TouchableOpacity
+                  style={styles.projectionButton}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/projection',
+                      params: {
+                        scanId: scan.id,
+                        scanImageUrl: scan.normalized_image_url ?? scan.image_url,
+                      },
+                    })
+                  }
+                >
+                  <Text style={styles.projectionButtonText}>See Future Projection</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
                   style={styles.reanalyzeButton}
                   onPress={analyze}>
                   <Text style={styles.reanalyzeText}>Re-analyze</Text>
@@ -387,6 +402,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 8,
   },
+  projectionButton: {
+    marginHorizontal: 20,
+    marginTop: 16,
+    backgroundColor: '#1a1a2e',
+    borderRadius: 14,
+    paddingVertical: 18,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#0a7ea440',
+  },
+  projectionButtonText: { color: '#0a7ea4', fontSize: 16, fontWeight: '600' },
   reanalyzeButton: {
     marginHorizontal: 20,
     marginTop: 12,

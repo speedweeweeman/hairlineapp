@@ -1,10 +1,16 @@
+import asyncio
+import io
 import math
 import os
 import urllib.request
+from dotenv import load_dotenv
 import httpx
+
+load_dotenv()
 import numpy as np
 import cv2
 import mediapipe as mp
+import replicate
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from fastapi import FastAPI, HTTPException
@@ -50,6 +56,60 @@ class NormalizeRequest(BaseModel):
 class AnalyzeRequest(BaseModel):
     scan_id: str
     image_url: str
+
+
+class ProjectionRequest(BaseModel):
+    scan_id: str
+    scenario: str
+    user_id: str
+
+
+_BASE_PROMPT = (
+    "realistic close-up photo of forehead and hairline, professional neutral lighting, "
+    "natural background, photorealistic, high quality, same person"
+)
+_NEG_PROMPT = (
+    "cartoon, illustration, drawing, anime, different person, jewelry, hat, glasses, "
+    "makeup, distorted face, blurry, low quality"
+)
+
+_SCENARIOS: dict[str, dict[int, tuple[str, float]]] = {
+    "no_action": {
+        3:  ("receding hairline, temples thinning slightly, natural hair loss progression", 0.25),
+        6:  ("receding hairline, temples thinning noticeably, natural hair loss progression", 0.38),
+        12: ("significantly receded hairline, visible temple recession, natural hair loss", 0.52),
+    },
+    "moderate_care": {
+        3:  ("maintained hairline, slight temple improvement, early minoxidil results", 0.18),
+        6:  ("maintained hairline, improved temple density, minoxidil treatment progress", 0.25),
+        12: ("improved hairline, fuller temples, successful minoxidil results", 0.32),
+    },
+    "aggressive_care": {
+        3:  ("slightly improved hairline, early hair regrowth at temples", 0.15),
+        6:  ("improved hairline, noticeable hair regrowth at temples, successful treatment", 0.22),
+        12: ("fuller hairline, significant hair regrowth, successful treatment results", 0.30),
+    },
+}
+
+
+async def _generate_one(image_bytes: bytes, prompt: str, strength: float) -> bytes:
+    output = await replicate.async_run(
+        "lucataco/sdxl-img2img",
+        input={
+            "image": io.BytesIO(image_bytes),
+            "prompt": prompt,
+            "negative_prompt": _NEG_PROMPT,
+            "prompt_strength": strength,
+            "num_inference_steps": 30,
+            "guidance_scale": 7.5,
+        },
+    )
+    url = str(output[0]) if isinstance(output, (list, tuple)) else str(output)
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        r = await client.get(url)
+    if r.status_code != 200:
+        raise RuntimeError(f"Failed to download generated image: {r.status_code}")
+    return r.content
 
 
 @app.get("/health")
@@ -228,3 +288,73 @@ async def analyze_hairline(req: AnalyzeRequest):
     ).eq("id", req.scan_id).execute()
 
     return {"status": status, "confidence": round(confidence, 2), "metrics": metrics}
+
+
+@app.post("/generate-projection")
+async def generate_projection(req: ProjectionRequest):
+    if req.scenario not in _SCENARIOS:
+        raise HTTPException(400, f"Invalid scenario: {req.scenario}")
+
+    if not os.environ.get("REPLICATE_API_TOKEN"):
+        raise HTTPException(503, "REPLICATE_API_TOKEN not set on the server")
+
+    # Return cached projections if all 3 timeframes already exist
+    existing = (
+        supabase_client.table("projections")
+        .select("timeframe, image_url")
+        .eq("base_scan_id", req.scan_id)
+        .eq("scenario", req.scenario)
+        .execute()
+    )
+    if existing.data and len(existing.data) == 3:
+        return {"projections": [{"timeframe": r["timeframe"], "image_url": r["image_url"]} for r in existing.data]}
+
+    # Fetch scan image
+    scan = supabase_client.table("scans").select("normalized_image_url, image_url").eq("id", req.scan_id).single().execute()
+    if not scan.data:
+        raise HTTPException(404, "Scan not found")
+
+    image_url = scan.data.get("normalized_image_url") or scan.data.get("image_url")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(image_url)
+    if r.status_code != 200:
+        raise HTTPException(400, "Failed to download scan image")
+
+    image_bytes = r.content
+
+    # Generate all 3 timeframes in parallel
+    timeframes = [3, 6, 12]
+    tasks = []
+    for tf in timeframes:
+        modifier, strength = _SCENARIOS[req.scenario][tf]
+        tasks.append(_generate_one(image_bytes, f"{_BASE_PROMPT}, {modifier}", strength))
+
+    try:
+        results = await asyncio.gather(*tasks)
+    except Exception as e:
+        raise HTTPException(500, f"Image generation failed: {e}")
+
+    # Upload results and persist to DB
+    projections = []
+    for tf, img_bytes in zip(timeframes, results):
+        file_path = f"projections/{req.scan_id}/{req.scenario}_{tf}.jpg"
+        try:
+            supabase_client.storage.from_("scans").remove([file_path])
+        except Exception:
+            pass
+        supabase_client.storage.from_("scans").upload(
+            path=file_path,
+            file=img_bytes,
+            file_options={"content-type": "image/jpeg"},
+        )
+        pub_url = supabase_client.storage.from_("scans").get_public_url(file_path)
+        supabase_client.table("projections").insert({
+            "user_id": req.user_id,
+            "base_scan_id": req.scan_id,
+            "scenario": req.scenario,
+            "timeframe": tf,
+            "image_url": pub_url,
+        }).execute()
+        projections.append({"timeframe": tf, "image_url": pub_url})
+
+    return {"projections": projections}
