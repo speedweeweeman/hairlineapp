@@ -256,6 +256,13 @@ export default function ScanDetailScreen() {
                 </TouchableOpacity>
 
                 <TouchableOpacity
+                  style={styles.planButton}
+                  onPress={() => router.push('/(tabs)/plan')}
+                >
+                  <Text style={styles.planButtonText}>Get Your Plan</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
                   style={styles.reanalyzeButton}
                   onPress={analyze}>
                   <Text style={styles.reanalyzeText}>Re-analyze</Text>
@@ -413,6 +420,17 @@ const styles = StyleSheet.create({
     borderColor: '#0a7ea440',
   },
   projectionButtonText: { color: '#0a7ea4', fontSize: 16, fontWeight: '600' },
+  planButton: {
+    marginHorizontal: 20,
+    marginTop: 12,
+    backgroundColor: '#111',
+    borderRadius: 14,
+    paddingVertical: 18,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  planButtonText: { color: '#fff', fontSize: 16, fontWeight: '500' },
   reanalyzeButton: {
     marginHorizontal: 20,
     marginTop: 12,

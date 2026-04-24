@@ -290,6 +290,101 @@ async def analyze_hairline(req: AnalyzeRequest):
     return {"status": status, "confidence": round(confidence, 2), "metrics": metrics}
 
 
+class PlanRequest(BaseModel):
+    age: int
+    family_history: bool
+    risk_tolerance: str  # "low" | "medium" | "high"
+    hairline_status: str | None = None  # "stable" | "slight_recession" | "moderate"
+
+
+@app.post("/generate-plan")
+async def generate_plan(req: PlanRequest):
+    if req.risk_tolerance not in ("low", "medium", "high"):
+        raise HTTPException(400, "risk_tolerance must be low, medium, or high")
+
+    # Base level from hairline status
+    base = {"stable": 1, "slight_recession": 2, "moderate": 3}.get(req.hairline_status or "stable", 1)
+
+    # Risk tolerance shifts the recommendation
+    if req.risk_tolerance == "high":
+        base = min(3, base + 1)
+    elif req.risk_tolerance == "low":
+        base = max(1, base - 1)
+
+    # Young age + family history is a meaningful risk factor
+    if req.family_history and req.age < 40:
+        base = min(3, base + 1)
+
+    recommended_level = base
+    urgency = {1: "low", 2: "moderate", 3: "high"}[recommended_level]
+
+    # Build insight
+    parts: list[str] = []
+    if req.hairline_status == "stable":
+        parts.append("your hairline is currently stable")
+    elif req.hairline_status == "slight_recession":
+        parts.append("early recession detected at your temples")
+    elif req.hairline_status == "moderate":
+        parts.append("your hairline shows moderate recession")
+    else:
+        parts.append("analyze a scan to sharpen this recommendation")
+
+    if req.family_history and req.age < 40:
+        parts.append("given your family history and age, starting now gives you the best window to act")
+    elif req.family_history:
+        parts.append("your family history makes consistent monitoring important")
+    elif req.age < 30:
+        parts.append("building a routine in your 20s sets you up for long-term results")
+
+    insight = ". ".join(s[0].upper() + s[1:] for s in parts) + "."
+
+    levels = [
+        {
+            "level": 1,
+            "title": "Foundation",
+            "subtitle": "Low commitment, daily habits",
+            "active": True,
+            "steps": [
+                "Weekly scans to track changes over time",
+                "Scalp massage 5 min/day to boost circulation",
+                "Prioritize sleep and reduce chronic stress",
+                "Protein-rich diet and consistent hydration",
+            ],
+        },
+        {
+            "level": 2,
+            "title": "OTC Treatment",
+            "subtitle": "Clinically proven, no prescription needed",
+            "active": recommended_level >= 2,
+            "steps": [
+                "Minoxidil 5% topical — apply twice daily",
+                "Ketoconazole shampoo 2–3× per week",
+                "Biotin + Zinc supplements daily",
+                "0.5mm derma-roller once per week alongside minoxidil",
+            ],
+        },
+        {
+            "level": 3,
+            "title": "Advanced Protocol",
+            "subtitle": "Medical options — consult a doctor first",
+            "active": recommended_level >= 3,
+            "steps": [
+                "Schedule a consultation with a dermatologist or trichologist",
+                "Discuss finasteride (oral or topical) with your doctor",
+                "Explore PRP (platelet-rich plasma) therapy",
+                "Hair transplant evaluation if recession continues after 12 months",
+            ],
+        },
+    ]
+
+    return {
+        "recommended_level": recommended_level,
+        "urgency": urgency,
+        "levels": levels,
+        "insight": insight,
+    }
+
+
 @app.post("/generate-projection")
 async def generate_projection(req: ProjectionRequest):
     if req.scenario not in _SCENARIOS:
