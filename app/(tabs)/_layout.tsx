@@ -45,6 +45,13 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <IconSymbol size={26} name="checklist" color={color} />,
         }}
       />
+      <Tabs.Screen
+        name="habits"
+        options={{
+          title: 'Habits',
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="flame.fill" color={color} />,
+        }}
+      />
       <Tabs.Screen name="explore" options={{ href: null }} />
     </Tabs>
   );

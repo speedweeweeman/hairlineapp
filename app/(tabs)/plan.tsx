@@ -15,6 +15,7 @@ import { supabase } from '@/lib/supabase';
 import { PYTHON_SERVICE_URL } from '@/constants/config';
 
 const profileKey = (userId: string) => `@hairy/plan_profile_${userId}`;
+export const planResultKey = (userId: string) => `@hairy/plan_result_${userId}`;
 
 type RiskTolerance = 'low' | 'medium' | 'high';
 
@@ -122,6 +123,7 @@ export default function PlanScreen() {
       if (!res.ok) throw new Error('Plan generation failed');
       const json = await res.json();
       setPlan(json);
+      await AsyncStorage.setItem(planResultKey(user!.id), JSON.stringify(json));
       setScreenState('result');
     } catch (e: any) {
       setErrorMsg(e.message || 'Failed to generate plan. Is the Python service running?');
