@@ -15,6 +15,21 @@ import {
 import { supabase } from '@/lib/supabase';
 import { PYTHON_SERVICE_URL } from '@/constants/config';
 
+async function pyFetch(path: string, body: object): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    return await fetch(`${PYTHON_SERVICE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IMAGE_HEIGHT = Math.round(SCREEN_WIDTH * 0.75);
 
@@ -111,10 +126,9 @@ export default function CompareScreen() {
 
   const normalizeScan = async (scan: ScanData): Promise<ScanData | null> => {
     try {
-      const res = await fetch(`${PYTHON_SERVICE_URL}/normalize-image`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scan_id: scan.id, image_url: scan.image_url }),
+      const res = await pyFetch('/normalize-image', {
+        scan_id: scan.id,
+        image_url: scan.image_url,
       });
 
       if (!res.ok) {

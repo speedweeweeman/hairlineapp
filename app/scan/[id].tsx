@@ -14,6 +14,21 @@ import {
 import { supabase } from '@/lib/supabase';
 import { PYTHON_SERVICE_URL } from '@/constants/config';
 
+async function pyFetch(path: string, body: object): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    return await fetch(`${PYTHON_SERVICE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 type Metrics = {
   temple_depth: number;
   symmetry: number;
@@ -88,10 +103,9 @@ export default function ScanDetailScreen() {
       setStage('normalizing');
       setStageText('Aligning image…');
       try {
-        const res = await fetch(`${PYTHON_SERVICE_URL}/normalize-image`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scan_id: current.id, image_url: current.image_url }),
+        const res = await pyFetch('/normalize-image', {
+          scan_id: current.id,
+          image_url: current.image_url,
         });
         if (res.ok) {
           const json = await res.json();
@@ -117,10 +131,9 @@ export default function ScanDetailScreen() {
     const imageUrl = current.normalized_image_url ?? current.image_url;
 
     try {
-      const res = await fetch(`${PYTHON_SERVICE_URL}/analyze-hairline`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scan_id: current.id, image_url: imageUrl }),
+      const res = await pyFetch('/analyze-hairline', {
+        scan_id: current.id,
+        image_url: imageUrl,
       });
 
       if (!res.ok) throw new Error('analysis failed');

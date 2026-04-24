@@ -184,17 +184,22 @@ async def analyze_hairline(req: AnalyzeRequest):
     left_y = float(np.mean(hairline[int(w * 0.10):int(w * 0.25)]))
     right_y = float(np.mean(hairline[int(w * 0.75):int(w * 0.90)]))
 
-    left_rec = max(0.0, left_y - center_y)
-    right_rec = max(0.0, right_y - center_y)
+    # Receded temples sit HIGHER in the image (smaller y) than the center hairline,
+    # so recession = center_y - temple_y (positive when temples are above center).
+    left_rec = max(0.0, center_y - left_y)
+    right_rec = max(0.0, center_y - right_y)
     temple_depth = round((left_rec + right_rec) / 2.0, 3)
 
-    denom = max(left_rec + right_rec, 1e-4)
+    # Use max(left, right) as denominator so equal recessions score 1.0 and
+    # one-sided recession scores 0.0 (maximally asymmetric).
+    denom = max(max(left_rec, right_rec), 1e-4)
     symmetry = round(max(0.0, 1.0 - abs(left_rec - right_rec) / denom), 2)
+    # mean hairline y-position across width (higher = hairline sits lower = more forehead)
     forehead_ratio = round(float(np.mean(hairline)), 3)
 
-    if temple_depth < 0.06:
+    if temple_depth < 0.04:
         status, confidence = "stable", 0.85
-    elif temple_depth < 0.15:
+    elif temple_depth < 0.12:
         status, confidence = "slight_recession", 0.80
     else:
         status, confidence = "moderate", 0.75
