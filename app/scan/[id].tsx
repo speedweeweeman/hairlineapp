@@ -109,15 +109,17 @@ export default function ScanDetailScreen() {
         });
         if (res.ok) {
           const json = await res.json();
-          await supabase
+          const { error: dbErr } = await supabase
             .from('scans')
             .update({
               normalized_image_url: json.normalized_image_url,
               landmarks_json: json.landmarks_json,
             })
             .eq('id', current.id);
-          current = { ...current, normalized_image_url: json.normalized_image_url };
-          setScan(current);
+          if (!dbErr) {
+            current = { ...current, normalized_image_url: json.normalized_image_url };
+            setScan(current);
+          }
         }
         // If normalize fails, continue with original image
       } catch {

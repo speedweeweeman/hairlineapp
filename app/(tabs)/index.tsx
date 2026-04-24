@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -7,7 +7,7 @@ import {
   SafeAreaView,
   ScrollView,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth } from '@/context/auth';
 import { supabase } from '@/lib/supabase';
 
@@ -24,9 +24,11 @@ export default function HomeScreen() {
   const router = useRouter();
   const [scanData, setScanData] = useState<ScanCount>({ count: 0, lastDate: null, latestStatus: null });
 
-  useEffect(() => {
-    loadScanData();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      loadScanData();
+    }, [user])
+  );
 
   const loadScanData = async () => {
     if (!user) return;

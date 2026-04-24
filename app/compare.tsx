@@ -86,8 +86,15 @@ export default function CompareScreen() {
       return;
     }
 
-    setBeforeScan(data.find((s) => s.id === beforeId)!);
-    setAfterScan(data.find((s) => s.id === afterId)!);
+    const before = data.find((s) => s.id === beforeId);
+    const after = data.find((s) => s.id === afterId);
+    if (!before || !after) {
+      setStatus('error');
+      setStatusText('Failed to load scans.');
+      return;
+    }
+    setBeforeScan(before);
+    setAfterScan(after);
     setStatus('ready');
   };
 

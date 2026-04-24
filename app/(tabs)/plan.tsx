@@ -14,7 +14,7 @@ import { useAuth } from '@/context/auth';
 import { supabase } from '@/lib/supabase';
 import { PYTHON_SERVICE_URL } from '@/constants/config';
 
-const PROFILE_KEY = '@hairy/plan_profile';
+const profileKey = (userId: string) => `@hairy/plan_profile_${userId}`;
 
 type RiskTolerance = 'low' | 'medium' | 'high';
 
@@ -92,7 +92,7 @@ export default function PlanScreen() {
       setLatestStatus(status);
     }
 
-    const saved = await AsyncStorage.getItem(PROFILE_KEY);
+    const saved = await AsyncStorage.getItem(profileKey(user!.id));
     if (saved) {
       const p = JSON.parse(saved) as Profile;
       setProfile(p);
@@ -130,14 +130,14 @@ export default function PlanScreen() {
   };
 
   const handleSubmitIntake = async () => {
-    const ageOption = AGE_OPTIONS.find((a) => a.key === selectedAge)!;
+    const ageOption = AGE_OPTIONS.find((a) => a.key === selectedAge) ?? AGE_OPTIONS[1];
     const p: Profile = {
       ageKey: selectedAge,
       age: ageOption.value,
       familyHistory,
       riskTolerance,
     };
-    await AsyncStorage.setItem(PROFILE_KEY, JSON.stringify(p));
+    await AsyncStorage.setItem(profileKey(user!.id), JSON.stringify(p));
     setProfile(p);
     await generatePlan(p, latestStatus);
   };

@@ -18,8 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
 
-SUPABASE_URL = "https://ogzwekwzpadussvthssw.supabase.co"
-SUPABASE_KEY = "sb_publishable_pJRqMr57af1eufD34V9KPw_HeLiU2XB"
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://ogzwekwzpadussvthssw.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_pJRqMr57af1eufD34V9KPw_HeLiU2XB")
 OUTPUT_SIZE = 512
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "face_landmarker.task")
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
@@ -283,9 +283,11 @@ async def analyze_hairline(req: AnalyzeRequest):
         "forehead_ratio": forehead_ratio,
     }
 
-    supabase_client.table("scans").update(
+    result = supabase_client.table("scans").update(
         {"hairline_status": status, "metrics_json": metrics}
     ).eq("id", req.scan_id).execute()
+    if not result.data:
+        raise HTTPException(500, "Failed to persist analysis result")
 
     return {"status": status, "confidence": round(confidence, 2), "metrics": metrics}
 
@@ -437,19 +439,24 @@ async def generate_projection(req: ProjectionRequest):
             supabase_client.storage.from_("scans").remove([file_path])
         except Exception:
             pass
-        supabase_client.storage.from_("scans").upload(
-            path=file_path,
-            file=img_bytes,
-            file_options={"content-type": "image/jpeg"},
-        )
+        try:
+            supabase_client.storage.from_("scans").upload(
+                path=file_path,
+                file=img_bytes,
+                file_options={"content-type": "image/jpeg"},
+            )
+        except Exception as e:
+            raise HTTPException(500, f"Storage upload failed for {tf}m projection: {e}")
         pub_url = supabase_client.storage.from_("scans").get_public_url(file_path)
-        supabase_client.table("projections").insert({
+        insert_result = supabase_client.table("projections").insert({
             "user_id": req.user_id,
             "base_scan_id": req.scan_id,
             "scenario": req.scenario,
             "timeframe": tf,
             "image_url": pub_url,
         }).execute()
+        if not insert_result.data:
+            raise HTTPException(500, f"Failed to persist {tf}m projection to database")
         projections.append({"timeframe": tf, "image_url": pub_url})
 
     return {"projections": projections}
