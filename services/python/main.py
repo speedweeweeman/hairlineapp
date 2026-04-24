@@ -3,6 +3,7 @@ import io
 import math
 import os
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import httpx
 
@@ -460,3 +461,113 @@ async def generate_projection(req: ProjectionRequest):
         projections.append({"timeframe": tf, "image_url": pub_url})
 
     return {"projections": projections}
+
+
+_STATUS_RANK = {"stable": 0, "slight_recession": 1, "moderate": 2}
+
+
+class ProgressRequest(BaseModel):
+    user_id: str
+
+
+@app.post("/progress-analysis")
+async def progress_analysis(req: ProgressRequest):
+    # Fetch all analyzed scans for the user, oldest first
+    scans_res = supabase_client.table("scans") \
+        .select("hairline_status, metrics_json, created_at") \
+        .eq("user_id", req.user_id) \
+        .not_.is_("hairline_status", "null") \
+        .order("created_at", desc=False) \
+        .execute()
+    scans = scans_res.data or []
+
+    # Fetch habit completions for the last 30 days
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    habits_res = supabase_client.table("habits") \
+        .select("completed_at") \
+        .eq("user_id", req.user_id) \
+        .gte("completed_at", cutoff) \
+        .execute()
+    habit_rows = habits_res.data or []
+
+    scan_count = len(scans)
+
+    # Habit consistency: unique days with any completion in last 30 days
+    habit_days = {r["completed_at"][:10] for r in habit_rows}
+    habit_consistency = round(len(habit_days) / 30.0, 3)
+
+    # Progress summary from scan trend
+    if scan_count < 2:
+        summary = "baseline"
+        summary_label = "Establishing Baseline"
+        metric_delta = 0.0
+        trend = "neutral"
+    else:
+        first = scans[0]
+        latest = scans[-1]
+        first_rank = _STATUS_RANK.get(first["hairline_status"], 0)
+        latest_rank = _STATUS_RANK.get(latest["hairline_status"], 0)
+
+        # Use temple_depth delta if metrics available (lower = better)
+        first_depth = (first.get("metrics_json") or {}).get("temple_depth", None)
+        latest_depth = (latest.get("metrics_json") or {}).get("temple_depth", None)
+        metric_delta = round(latest_depth - first_depth, 3) if (first_depth is not None and latest_depth is not None) else 0.0
+
+        rank_delta = latest_rank - first_rank
+        if rank_delta < 0 or metric_delta < -0.02:
+            summary = "improvement"
+            summary_label = "Improving"
+            trend = "improving"
+        elif rank_delta > 0 or metric_delta > 0.02:
+            summary = "worsening"
+            summary_label = "Watch Closely"
+            trend = "worsening"
+        else:
+            summary = "no_change"
+            summary_label = "Holding Steady"
+            trend = "neutral"
+
+    # Confidence score (0–100):
+    # Habit consistency contributes up to 40 pts
+    # Scan frequency (scans in 30 days / target 4) contributes up to 30 pts
+    # Stable/improving trend contributes 30 pts
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=30)).date().isoformat()
+    recent_scans_count = sum(1 for s in scans if s["created_at"][:10] >= cutoff_date)
+    scan_freq_score = min(1.0, recent_scans_count / 4.0)
+    trend_score = 1.0 if trend in ("improving", "neutral") else 0.0
+    confidence_score = int(habit_consistency * 40 + scan_freq_score * 30 + trend_score * 30)
+
+    # Build insight
+    if scan_count == 0:
+        insight = "Take your first scan to start tracking progress."
+    elif scan_count < 2:
+        insight = "Baseline established. Take scans weekly to start seeing your trend."
+    elif summary == "improvement":
+        insight = f"Your hairline metrics have improved across {scan_count} scans. Keep up your protocol."
+    elif summary == "worsening":
+        insight = f"Your metrics show some progression across {scan_count} scans. Consider stepping up your protocol."
+    else:
+        insight = f"Your hairline has held steady across {scan_count} scans. Consistency is working."
+
+    if habit_consistency < 0.3 and scan_count > 0:
+        insight += " Habit consistency is low — daily routines have the biggest impact over time."
+    elif habit_consistency >= 0.7:
+        insight += " Strong habit streak — this is what long-term results are built on."
+
+    # Recent scan timeline (last 10)
+    recent_scans = [
+        {"date": s["created_at"][:10], "status": s["hairline_status"]}
+        for s in scans[-10:]
+    ]
+
+    return {
+        "summary": summary,
+        "summary_label": summary_label,
+        "confidence_score": confidence_score,
+        "habit_consistency": habit_consistency,
+        "scan_count": scan_count,
+        "metric_delta": metric_delta,
+        "trend": trend,
+        "insight": insight,
+        "recent_scans": recent_scans,
+    }

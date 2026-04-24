@@ -52,6 +52,13 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <IconSymbol size={26} name="flame.fill" color={color} />,
         }}
       />
+      <Tabs.Screen
+        name="progress"
+        options={{
+          title: 'Progress',
+          tabBarIcon: ({ color }) => <IconSymbol size={26} name="chart.line.uptrend.xyaxis" color={color} />,
+        }}
+      />
       <Tabs.Screen name="explore" options={{ href: null }} />
     </Tabs>
   );
