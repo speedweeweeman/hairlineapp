@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
@@ -41,7 +41,7 @@ type PlanResult = {
   insight: string;
 };
 
-type ScreenState = 'loading' | 'intake' | 'generating' | 'result' | 'error';
+type ScreenState = 'loading' | 'no_scan' | 'intake' | 'generating' | 'result' | 'error';
 
 const AGE_OPTIONS = [
   { key: 'u25', label: 'Under 25', value: 22 },
@@ -58,6 +58,7 @@ const URGENCY_COLORS: Record<string, string> = {
 
 export default function PlanScreen() {
   const { user } = useAuth();
+  const router = useRouter();
 
   const [screenState, setScreenState] = useState<ScreenState>('loading');
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -91,6 +92,11 @@ export default function PlanScreen() {
         .single();
       status = data?.hairline_status ?? null;
       setLatestStatus(status);
+    }
+
+    if (!status) {
+      setScreenState('no_scan');
+      return;
     }
 
     const saved = await AsyncStorage.getItem(profileKey(user!.id));
@@ -179,6 +185,25 @@ export default function PlanScreen() {
           </TouchableOpacity>
           <TouchableOpacity style={styles.editLink} onPress={handleEdit}>
             <Text style={styles.editLinkText}>Edit Profile</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (screenState === 'no_scan') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centeredFull}>
+          <Text style={styles.noScanTitle}>Scan First</Text>
+          <Text style={styles.noScanBody}>
+            Your plan is built from your hairline scan. Take a photo and get it analyzed before generating your protocol.
+          </Text>
+          <TouchableOpacity
+            style={styles.scanButton}
+            onPress={() => router.push('/(tabs)/camera')}
+          >
+            <Text style={styles.scanButtonText}>Take a Scan</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -298,14 +323,6 @@ export default function PlanScreen() {
         {plan.levels.map((level) => (
           <LevelCard key={level.level} level={level} recommendedLevel={plan.recommended_level} />
         ))}
-
-        {!latestStatus && (
-          <View style={styles.noScanNote}>
-            <Text style={styles.noScanNoteText}>
-              Analyze a hairline scan to sharpen this recommendation.
-            </Text>
-          </View>
-        )}
 
         <TouchableOpacity style={styles.editButton} onPress={handleEdit}>
           <Text style={styles.editButtonText}>Update Profile</Text>
@@ -498,14 +515,6 @@ const styles = StyleSheet.create({
   stepDotDimmed: { backgroundColor: '#2a2a2a' },
   stepText: { flex: 1, fontSize: 14, color: '#bbb', lineHeight: 20 },
   stepTextDimmed: { color: '#333' },
-  noScanNote: {
-    backgroundColor: '#111',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#2a2a2a',
-  },
-  noScanNoteText: { color: '#555', fontSize: 13, lineHeight: 18, textAlign: 'center' },
   editButton: { paddingVertical: 14, alignItems: 'center' },
   editButtonText: { color: '#444', fontSize: 14 },
   errorText: { color: '#f87171', fontSize: 15, textAlign: 'center', lineHeight: 22 },
@@ -518,4 +527,14 @@ const styles = StyleSheet.create({
   retryText: { color: '#fff', fontWeight: '600' },
   editLink: { paddingVertical: 8 },
   editLinkText: { color: '#555', fontSize: 14 },
+  noScanTitle: { fontSize: 26, fontWeight: '700', color: '#fff', marginBottom: 12, textAlign: 'center' },
+  noScanBody: { fontSize: 15, color: '#555', lineHeight: 22, textAlign: 'center', marginBottom: 32, paddingHorizontal: 8 },
+  scanButton: {
+    backgroundColor: '#0a7ea4',
+    borderRadius: 14,
+    paddingVertical: 18,
+    paddingHorizontal: 48,
+    alignItems: 'center',
+  },
+  scanButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });
