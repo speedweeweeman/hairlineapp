@@ -89,8 +89,34 @@ export default function ScanDetailScreen() {
       return;
     }
 
-    setScan(data);
-    setStage(data.hairline_status ? 'done' : 'idle');
+    let scanData = data;
+    setScan(scanData);
+
+    if (!scanData.normalized_image_url) {
+      setStage('normalizing');
+      setStageText('Aligning image…');
+      try {
+        const res = await pyFetch('/normalize-image', {
+          scan_id: scanData.id,
+          image_url: scanData.image_url,
+        });
+        if (res.ok) {
+          const json = await res.json();
+          const { error: dbErr } = await supabase
+            .from('scans')
+            .update({ normalized_image_url: json.normalized_image_url, landmarks_json: json.landmarks_json })
+            .eq('id', scanData.id);
+          if (!dbErr) {
+            scanData = { ...scanData, normalized_image_url: json.normalized_image_url };
+            setScan(scanData);
+          }
+        }
+      } catch {
+        // service offline — show raw image
+      }
+    }
+
+    setStage(scanData.hairline_status ? 'done' : 'idle');
   };
 
   const analyze = async () => {

@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { supabase } from '@/lib/supabase';
+import { PYTHON_SERVICE_URL } from '@/constants/config';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const IMAGE_HEIGHT = Math.round(SCREEN_WIDTH * 0.75);
@@ -26,6 +27,26 @@ type ScanData = {
 };
 
 type Status = 'loading' | 'ready' | 'error';
+
+async function normalizeIfNeeded(scan: ScanData): Promise<ScanData> {
+  if (scan.normalized_image_url) return scan;
+  try {
+    const res = await fetch(`${PYTHON_SERVICE_URL}/normalize-image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scan_id: scan.id, image_url: scan.image_url }),
+    });
+    if (!res.ok) return scan;
+    const json = await res.json();
+    await supabase
+      .from('scans')
+      .update({ normalized_image_url: json.normalized_image_url, landmarks_json: json.landmarks_json })
+      .eq('id', scan.id);
+    return { ...scan, normalized_image_url: json.normalized_image_url };
+  } catch {
+    return scan;
+  }
+}
 
 export default function CompareScreen() {
   const { before: beforeId, after: afterId } = useLocalSearchParams<{
@@ -86,13 +107,19 @@ export default function CompareScreen() {
       return;
     }
 
-    const before = data.find((s) => s.id === beforeId);
-    const after = data.find((s) => s.id === afterId);
+    let before = data.find((s) => s.id === beforeId);
+    let after = data.find((s) => s.id === afterId);
     if (!before || !after) {
       setStatus('error');
       setStatusText('Failed to load scans.');
       return;
     }
+
+    if (!before.normalized_image_url || !after.normalized_image_url) {
+      setStatusText('Aligning images to eye level…');
+      [before, after] = await Promise.all([normalizeIfNeeded(before), normalizeIfNeeded(after)]);
+    }
+
     setBeforeScan(before);
     setAfterScan(after);
     setStatus('ready');

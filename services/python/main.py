@@ -1,4 +1,3 @@
-import asyncio
 import io
 import math
 import os
@@ -75,32 +74,34 @@ _NEG_PROMPT = (
 )
 
 _SCENARIOS: dict[str, dict[int, tuple[str, float]]] = {
+    # Each step is applied to the OUTPUT of the previous step (chained generation).
+    # Strengths are intentionally smaller than a single-pass approach would use.
     "no_action": {
-        3:  ("receding hairline, temples thinning slightly, natural hair loss progression", 0.25),
-        6:  ("receding hairline, temples thinning noticeably, natural hair loss progression", 0.38),
-        12: ("significantly receded hairline, visible temple recession, natural hair loss", 0.52),
+        3:  ("slight temple recession beginning, hairline corners thinning", 0.22),
+        6:  ("temples receding further, hairline corners higher than before", 0.20),
+        12: ("significant temple recession, hairline clearly higher at corners", 0.24),
     },
     "moderate_care": {
-        3:  ("maintained hairline, slight temple improvement, early minoxidil results", 0.18),
-        6:  ("maintained hairline, improved temple density, minoxidil treatment progress", 0.25),
-        12: ("improved hairline, fuller temples, successful minoxidil results", 0.32),
+        3:  ("hairline stabilising, slight new growth at temples, treatment starting", 0.13),
+        6:  ("temple density improving, hairline maintaining, minoxidil working", 0.13),
+        12: ("full temple coverage maintained, hairline density restored", 0.15),
     },
     "aggressive_care": {
-        3:  ("slightly improved hairline, early hair regrowth at temples", 0.15),
-        6:  ("improved hairline, noticeable hair regrowth at temples, successful treatment", 0.22),
-        12: ("fuller hairline, significant hair regrowth, successful treatment results", 0.30),
+        3:  ("early hair regrowth at temples, hairline beginning to improve", 0.12),
+        6:  ("continued regrowth at temples, hairline visibly improving", 0.13),
+        12: ("strong regrowth, temples recovering, hairline restored", 0.15),
     },
 }
 
 
 async def _generate_one(image_bytes: bytes, prompt: str, strength: float) -> bytes:
     output = await replicate.async_run(
-        "lucataco/sdxl-img2img",
+        "lucataco/realvisxl-v2-img2img:47e54eff7b805b79428ffcb4a972d29bf68199e53fc626455d10b1f0cc57fbbc",
         input={
             "image": io.BytesIO(image_bytes),
             "prompt": prompt,
             "negative_prompt": _NEG_PROMPT,
-            "prompt_strength": strength,
+            "strength": strength,
             "num_inference_steps": 30,
             "guidance_scale": 7.5,
         },
@@ -394,18 +395,7 @@ async def generate_projection(req: ProjectionRequest):
     if not os.environ.get("REPLICATE_API_TOKEN"):
         raise HTTPException(503, "REPLICATE_API_TOKEN not set on the server")
 
-    # Return cached projections if all 3 timeframes already exist
-    existing = (
-        supabase_client.table("projections")
-        .select("timeframe, image_url")
-        .eq("base_scan_id", req.scan_id)
-        .eq("scenario", req.scenario)
-        .execute()
-    )
-    if existing.data and len(existing.data) == 3:
-        return {"projections": [{"timeframe": r["timeframe"], "image_url": r["image_url"]} for r in existing.data]}
-
-    # Fetch scan image
+    # Always fetch the latest scan image — prefer normalized so hairline baseline is aligned
     scan_res = supabase_client.table("scans").select("normalized_image_url, image_url").eq("id", req.scan_id).execute()
     if not scan_res.data:
         raise HTTPException(404, "Scan not found")
@@ -416,19 +406,48 @@ async def generate_projection(req: ProjectionRequest):
     if r.status_code != 200:
         raise HTTPException(400, "Failed to download scan image")
 
-    image_bytes = r.content
+    # SDXL img2img rotates non-square inputs — pad to 512×512 square before generation.
+    # The normalized image is 512×317 (landscape crop); padding bottom with neutral grey.
+    raw = np.frombuffer(r.content, np.uint8)
+    img_in = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    if img_in is None:
+        raise HTTPException(400, "Could not decode scan image")
+    h_in, w_in = img_in.shape[:2]
+    if h_in != w_in:
+        side = max(h_in, w_in)
+        padded = np.full((side, side, 3), 30, dtype=np.uint8)  # dark neutral background
+        padded[:h_in, :w_in] = img_in
+        ok, buf = cv2.imencode(".jpg", padded, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        if not ok:
+            raise HTTPException(500, "Image pad failed")
+        base_bytes = buf.tobytes()
+    else:
+        base_bytes = r.content
 
-    # Generate all 3 timeframes in parallel
+    # Chain generations: 3m from baseline → 6m from 3m output → 12m from 6m output.
+    # This guarantees each timeframe is monotonically more/less than the previous.
     timeframes = [3, 6, 12]
-    tasks = []
-    for tf in timeframes:
-        modifier, strength = _SCENARIOS[req.scenario][tf]
-        tasks.append(_generate_one(image_bytes, f"{_BASE_PROMPT}, {modifier}", strength))
+    results: list[bytes] = []
+    current_bytes = base_bytes
 
     try:
-        results = await asyncio.gather(*tasks)
+        for tf in timeframes:
+            modifier, strength = _SCENARIOS[req.scenario][tf]
+            result_bytes = await _generate_one(current_bytes, f"{_BASE_PROMPT}, {modifier}", strength)
+            results.append(result_bytes)
+            current_bytes = result_bytes
     except Exception as e:
         raise HTTPException(500, f"Image generation failed: {e}")
+
+    # Delete any stale projections for this scan+scenario before writing fresh ones
+    try:
+        supabase_client.table("projections") \
+            .delete() \
+            .eq("base_scan_id", req.scan_id) \
+            .eq("scenario", req.scenario) \
+            .execute()
+    except Exception:
+        pass
 
     # Upload results and persist to DB
     projections = []
