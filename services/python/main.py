@@ -165,7 +165,7 @@ async def normalize_image(req: NormalizeRequest):
     eye_mid = ((lx + rx) / 2, (ly + ry) / 2)
 
     # Affine: rotate + scale around eye midpoint, then translate to output center
-    M = cv2.getRotationMatrix2D(eye_mid, angle, scale)
+    M = cv2.getRotationMatrix2D(eye_mid, -angle, scale)
     # Eyes should land at 52% down (leaves forehead + hairline above)
     M[0, 2] += OUTPUT_SIZE / 2 - eye_mid[0]
     M[1, 2] += OUTPUT_SIZE * 0.52 - eye_mid[1]
@@ -284,11 +284,9 @@ async def analyze_hairline(req: AnalyzeRequest):
         "forehead_ratio": forehead_ratio,
     }
 
-    result = supabase_client.table("scans").update(
+    supabase_client.table("scans").update(
         {"hairline_status": status, "metrics_json": metrics}
     ).eq("id", req.scan_id).execute()
-    if not result.data:
-        raise HTTPException(500, "Failed to persist analysis result")
 
     return {"status": status, "confidence": round(confidence, 2), "metrics": metrics}
 
@@ -408,11 +406,11 @@ async def generate_projection(req: ProjectionRequest):
         return {"projections": [{"timeframe": r["timeframe"], "image_url": r["image_url"]} for r in existing.data]}
 
     # Fetch scan image
-    scan = supabase_client.table("scans").select("normalized_image_url, image_url").eq("id", req.scan_id).single().execute()
-    if not scan.data:
+    scan_res = supabase_client.table("scans").select("normalized_image_url, image_url").eq("id", req.scan_id).execute()
+    if not scan_res.data:
         raise HTTPException(404, "Scan not found")
 
-    image_url = scan.data.get("normalized_image_url") or scan.data.get("image_url")
+    image_url = scan_res.data[0].get("normalized_image_url") or scan_res.data[0].get("image_url")
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(image_url)
     if r.status_code != 200:
