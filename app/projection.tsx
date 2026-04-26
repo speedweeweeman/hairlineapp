@@ -87,7 +87,7 @@ export default function ProjectionScreen() {
 
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 180000);
+      const timer = setTimeout(() => controller.abort(), 360000);
       const res = await fetch(`${PYTHON_SERVICE_URL}/generate-projection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -1,3 +1,4 @@
+import asyncio
 import io
 import math
 import os
@@ -5,6 +6,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import httpx
+from PIL import Image as PILImage, ImageOps as PILImageOps
 
 load_dotenv()
 import numpy as np
@@ -65,53 +67,66 @@ class ProjectionRequest(BaseModel):
 
 
 _BASE_PROMPT = (
-    "realistic close-up photo of forehead and hairline, professional neutral lighting, "
-    "natural background, photorealistic, high quality, same person"
+    "realistic photo of hairline and forehead, only the hairline and temple hair is different, "
+    "face skin texture unchanged, same wrinkles, same facial features, same expression, "
+    "same lighting, same framing, same camera angle, photorealistic, high quality"
 )
 _NEG_PROMPT = (
-    "cartoon, illustration, drawing, anime, different person, jewelry, hat, glasses, "
-    "makeup, distorted face, blurry, low quality"
+    "cartoon, illustration, drawing, anime, different person, aging, younger looking, "
+    "skin changes, wrinkles added, wrinkles removed, facial changes, face altered, "
+    "reframed, zoomed in, zoomed out, blurry, low quality"
 )
 
+# All timeframes generated from the same normalized base. Strengths stay low (0.15–0.28)
+# so the model only nudges the hairline/temple region and leaves the face untouched.
 _SCENARIOS: dict[str, dict[int, tuple[str, float]]] = {
-    # Each step is applied to the OUTPUT of the previous step (chained generation).
-    # Strengths are intentionally smaller than a single-pass approach would use.
     "no_action": {
-        3:  ("slight temple recession beginning, hairline corners thinning", 0.22),
-        6:  ("temples receding further, hairline corners higher than before", 0.20),
-        12: ("significant temple recession, hairline clearly higher at corners", 0.24),
+        3:  ("hairline corners very slightly higher, temples just beginning to thin", 0.17),
+        6:  ("temple hair noticeably thinner, hairline corners receding", 0.22),
+        12: ("clear temple recession, hairline visibly higher at corners", 0.28),
     },
     "moderate_care": {
-        3:  ("hairline stabilising, slight new growth at temples, treatment starting", 0.13),
-        6:  ("temple density improving, hairline maintaining, minoxidil working", 0.13),
-        12: ("full temple coverage maintained, hairline density restored", 0.15),
+        3:  ("hairline stable, temple density holding, no further recession", 0.13),
+        6:  ("temple density slightly improved, hairline maintaining", 0.16),
+        12: ("temples fuller, hairline density restored to baseline", 0.20),
     },
     "aggressive_care": {
-        3:  ("early hair regrowth at temples, hairline beginning to improve", 0.12),
-        6:  ("continued regrowth at temples, hairline visibly improving", 0.13),
-        12: ("strong regrowth, temples recovering, hairline restored", 0.15),
+        3:  ("new fine hairs appearing at temples, hairline starting to fill in", 0.13),
+        6:  ("temple hair visibly thicker, hairline lower and denser", 0.18),
+        12: ("temples fully recovered, hairline dense and restored", 0.22),
     },
 }
 
 
 async def _generate_one(image_bytes: bytes, prompt: str, strength: float) -> bytes:
-    output = await replicate.async_run(
-        "lucataco/realvisxl-v2-img2img:47e54eff7b805b79428ffcb4a972d29bf68199e53fc626455d10b1f0cc57fbbc",
-        input={
-            "image": io.BytesIO(image_bytes),
-            "prompt": prompt,
-            "negative_prompt": _NEG_PROMPT,
-            "strength": strength,
-            "num_inference_steps": 30,
-            "guidance_scale": 7.5,
-        },
-    )
-    url = str(output[0]) if isinstance(output, (list, tuple)) else str(output)
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.get(url)
-    if r.status_code != 200:
-        raise RuntimeError(f"Failed to download generated image: {r.status_code}")
-    return r.content
+    # Retry up to 4 times with backoff to handle Replicate 429 rate limits
+    last_err: Exception = RuntimeError("unknown")
+    for attempt in range(4):
+        if attempt > 0:
+            await asyncio.sleep(15 * attempt)  # 15s, 30s, 45s
+        try:
+            output = await replicate.async_run(
+                "lucataco/realvisxl-v2-img2img:47e54eff7b805b79428ffcb4a972d29bf68199e53fc626455d10b1f0cc57fbbc",
+                input={
+                    "image": io.BytesIO(image_bytes),
+                    "prompt": prompt,
+                    "negative_prompt": _NEG_PROMPT,
+                    "strength": strength,
+                    "num_inference_steps": 30,
+                    "guidance_scale": 7.5,
+                },
+            )
+            url = str(output[0]) if isinstance(output, (list, tuple)) else str(output)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.get(url)
+            if r.status_code != 200:
+                raise RuntimeError(f"Failed to download generated image: {r.status_code}")
+            return r.content
+        except Exception as e:
+            last_err = e
+            if "429" not in str(e) and "throttled" not in str(e).lower():
+                raise  # Non-rate-limit errors fail immediately
+    raise last_err
 
 
 @app.get("/health")
@@ -119,70 +134,87 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/normalize-image")
-async def normalize_image(req: NormalizeRequest):
-    # Download image from Supabase public URL
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.get(req.image_url)
-    if r.status_code != 200:
-        raise HTTPException(400, f"Failed to download image: HTTP {r.status_code}")
+_LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+_RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+_KEY_LANDMARKS = [33, 133, 362, 263, 10, 152, 234, 454]
 
-    nparr = np.frombuffer(r.content, np.uint8)
+
+def _do_normalize(image_bytes: bytes) -> tuple[bytes, dict]:
+    """
+    Apply EXIF rotation, align face to eyes, crop to hairline region.
+    Returns (jpeg_bytes, landmarks_json). Raises ValueError on failure.
+    """
+    # Apply EXIF orientation before OpenCV — phone photos store raw landscape pixels
+    # with an EXIF tag telling viewers to rotate; OpenCV ignores that tag.
+    try:
+        pil = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+        pil = PILImageOps.exif_transpose(pil)
+        buf = io.BytesIO()
+        pil.save(buf, format="JPEG", quality=95)
+        image_bytes = buf.getvalue()
+    except Exception:
+        pass  # If Pillow fails, proceed with raw bytes
+
+    nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
-        raise HTTPException(400, "Could not decode image")
+        raise ValueError("Could not decode image")
 
     h, w = img.shape[:2]
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # Detect face landmarks
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(img_rgb))
     results = _detector.detect(mp_image)
-
     if not results.face_landmarks:
-        raise HTTPException(422, "No face detected in image")
+        raise ValueError("No face detected in image")
 
     lm = results.face_landmarks[0]
-
-    # Compute eye centers using standard iris/eye contour landmarks
-    LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
-    RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
 
     def eye_center(indices):
         xs = [lm[i].x * w for i in indices]
         ys = [lm[i].y * h for i in indices]
         return sum(xs) / len(xs), sum(ys) / len(ys)
 
-    lx, ly = eye_center(LEFT_EYE)
-    rx, ry = eye_center(RIGHT_EYE)
+    lx, ly = eye_center(_LEFT_EYE)
+    rx, ry = eye_center(_RIGHT_EYE)
 
-    # Roll angle from eye baseline
     angle = math.degrees(math.atan2(ry - ly, rx - lx))
-
-    # Scale so eye distance = 28% of output width
     eye_dist = math.hypot(rx - lx, ry - ly)
     scale = (OUTPUT_SIZE * 0.28) / eye_dist
-
     eye_mid = ((lx + rx) / 2, (ly + ry) / 2)
 
-    # Affine: rotate + scale around eye midpoint, then translate to output center
     M = cv2.getRotationMatrix2D(eye_mid, -angle, scale)
-    # Eyes should land at 52% down (leaves forehead + hairline above)
     M[0, 2] += OUTPUT_SIZE / 2 - eye_mid[0]
     M[1, 2] += OUTPUT_SIZE * 0.52 - eye_mid[1]
 
     aligned = cv2.warpAffine(img, M, (OUTPUT_SIZE, OUTPUT_SIZE))
 
-    # Crop to hairline region: top 62% (forehead + just past eyes)
     crop_h = int(OUTPUT_SIZE * 0.62)
     cropped = aligned[:crop_h, :]
 
-    # Encode as JPEG
-    ok, buf = cv2.imencode(".jpg", cropped, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    ok, enc = cv2.imencode(".jpg", cropped, [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
-        raise HTTPException(500, "Image encode failed")
+        raise ValueError("Image encode failed")
 
-    # Remove any existing normalized file, then upload fresh
+    landmarks_json = {
+        str(i): {"x": round(lm[i].x, 4), "y": round(lm[i].y, 4), "z": round(lm[i].z, 4)}
+        for i in _KEY_LANDMARKS
+    }
+    return enc.tobytes(), landmarks_json
+
+
+@app.post("/normalize-image")
+async def normalize_image(req: NormalizeRequest):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(req.image_url)
+    if r.status_code != 200:
+        raise HTTPException(400, f"Failed to download image: HTTP {r.status_code}")
+
+    try:
+        normalized_bytes, landmarks_json = _do_normalize(r.content)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
     file_path = f"normalized/{req.scan_id}.jpg"
     try:
         supabase_client.storage.from_("scans").remove([file_path])
@@ -192,25 +224,13 @@ async def normalize_image(req: NormalizeRequest):
     try:
         supabase_client.storage.from_("scans").upload(
             path=file_path,
-            file=buf.tobytes(),
+            file=normalized_bytes,
             file_options={"content-type": "image/jpeg"},
         )
     except Exception as e:
         raise HTTPException(500, f"Storage upload failed: {e}")
 
     normalized_url = supabase_client.storage.from_("scans").get_public_url(file_path)
-
-    # Store key landmarks (eyes, top of head, chin, sides)
-    key_indices = [33, 133, 362, 263, 10, 152, 234, 454]
-    landmarks_json = {
-        str(i): {
-            "x": round(lm[i].x, 4),
-            "y": round(lm[i].y, 4),
-            "z": round(lm[i].z, 4),
-        }
-        for i in key_indices
-    }
-
     return {"normalized_image_url": normalized_url, "landmarks_json": landmarks_json}
 
 
@@ -395,47 +415,57 @@ async def generate_projection(req: ProjectionRequest):
     if not os.environ.get("REPLICATE_API_TOKEN"):
         raise HTTPException(503, "REPLICATE_API_TOKEN not set on the server")
 
-    # Always fetch the latest scan image — prefer normalized so hairline baseline is aligned
     scan_res = supabase_client.table("scans").select("normalized_image_url, image_url").eq("id", req.scan_id).execute()
     if not scan_res.data:
         raise HTTPException(404, "Scan not found")
 
-    image_url = scan_res.data[0].get("normalized_image_url") or scan_res.data[0].get("image_url")
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        r = await client.get(image_url)
-    if r.status_code != 200:
-        raise HTTPException(400, "Failed to download scan image")
+    normalized_url = scan_res.data[0].get("normalized_image_url")
+    original_url = scan_res.data[0].get("image_url")
 
-    # SDXL img2img rotates non-square inputs — pad to 512×512 square before generation.
-    # The normalized image is 512×317 (landscape crop); padding bottom with neutral grey.
-    raw = np.frombuffer(r.content, np.uint8)
-    img_in = cv2.imdecode(raw, cv2.IMREAD_COLOR)
-    if img_in is None:
-        raise HTTPException(400, "Could not decode scan image")
-    h_in, w_in = img_in.shape[:2]
-    if h_in != w_in:
-        side = max(h_in, w_in)
-        padded = np.full((side, side, 3), 30, dtype=np.uint8)  # dark neutral background
-        padded[:h_in, :w_in] = img_in
-        ok, buf = cv2.imencode(".jpg", padded, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        if not ok:
-            raise HTTPException(500, "Image pad failed")
-        base_bytes = buf.tobytes()
-    else:
+    if normalized_url:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.get(normalized_url)
+        if r.status_code != 200:
+            raise HTTPException(400, "Failed to download normalized image")
         base_bytes = r.content
+    else:
+        # No normalized image in DB — run normalization inline so we never send a raw
+        # (potentially EXIF-rotated) phone photo to the AI model.
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.get(original_url)
+        if r.status_code != 200:
+            raise HTTPException(400, "Failed to download scan image")
+        try:
+            norm_bytes, landmarks_json = _do_normalize(r.content)
+        except ValueError as e:
+            raise HTTPException(422, f"Normalization failed: {e}")
+        # Persist to storage and update DB so future calls skip this step
+        file_path = f"normalized/{req.scan_id}.jpg"
+        try:
+            supabase_client.storage.from_("scans").remove([file_path])
+            supabase_client.storage.from_("scans").upload(
+                path=file_path,
+                file=norm_bytes,
+                file_options={"content-type": "image/jpeg"},
+            )
+            norm_url = supabase_client.storage.from_("scans").get_public_url(file_path)
+            supabase_client.table("scans").update(
+                {"normalized_image_url": norm_url, "landmarks_json": landmarks_json}
+            ).eq("id", req.scan_id).execute()
+        except Exception:
+            pass  # Non-fatal — we still have the bytes
+        base_bytes = norm_bytes
 
-    # Chain generations: 3m from baseline → 6m from 3m output → 12m from 6m output.
-    # This guarantees each timeframe is monotonically more/less than the previous.
+    # Generate each timeframe independently from the same normalized base.
+    # Never chain — chaining drifts the framing away from the hairline region.
     timeframes = [3, 6, 12]
     results: list[bytes] = []
-    current_bytes = base_bytes
 
     try:
         for tf in timeframes:
             modifier, strength = _SCENARIOS[req.scenario][tf]
-            result_bytes = await _generate_one(current_bytes, f"{_BASE_PROMPT}, {modifier}", strength)
+            result_bytes = await _generate_one(base_bytes, f"{_BASE_PROMPT}, {modifier}", strength)
             results.append(result_bytes)
-            current_bytes = result_bytes
     except Exception as e:
         raise HTTPException(500, f"Image generation failed: {e}")
 
