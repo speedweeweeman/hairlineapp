@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { useAuth } from '@/context/auth';
+import { useSubscription } from '@/context/subscription';
 import { supabase } from '@/lib/supabase';
 import { PYTHON_SERVICE_URL } from '@/constants/config';
 
@@ -41,7 +42,7 @@ type PlanResult = {
   insight: string;
 };
 
-type ScreenState = 'loading' | 'no_scan' | 'intake' | 'generating' | 'result' | 'error';
+type ScreenState = 'loading' | 'no_scan' | 'locked' | 'intake' | 'generating' | 'result' | 'error';
 
 const AGE_OPTIONS = [
   { key: 'u25', label: 'Under 25', value: 22 },
@@ -58,6 +59,7 @@ const URGENCY_COLORS: Record<string, string> = {
 
 export default function PlanScreen() {
   const { user } = useAuth();
+  const { isSubscribed } = useSubscription();
   const router = useRouter();
 
   const [screenState, setScreenState] = useState<ScreenState>('loading');
@@ -74,7 +76,7 @@ export default function PlanScreen() {
   useFocusEffect(
     useCallback(() => {
       init();
-    }, [user])
+    }, [user, isSubscribed])
   );
 
   const init = async () => {
@@ -96,6 +98,11 @@ export default function PlanScreen() {
 
     if (!status) {
       setScreenState('no_scan');
+      return;
+    }
+
+    if (!isSubscribed) {
+      setScreenState('locked');
       return;
     }
 
@@ -185,6 +192,25 @@ export default function PlanScreen() {
           </TouchableOpacity>
           <TouchableOpacity style={styles.editLink} onPress={handleEdit}>
             <Text style={styles.editLinkText}>Edit Profile</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (screenState === 'locked') {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centeredFull}>
+          <Text style={styles.noScanTitle}>Pro Feature</Text>
+          <Text style={styles.noScanBody}>
+            Your personalized treatment plan is available with Hairline OS Pro. Upgrade to unlock AI-powered recommendations based on your scan.
+          </Text>
+          <TouchableOpacity
+            style={styles.scanButton}
+            onPress={() => router.push('/paywall')}
+          >
+            <Text style={styles.scanButtonText}>Unlock Hairline OS Pro</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>

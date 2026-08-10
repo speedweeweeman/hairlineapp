@@ -1,7 +1,11 @@
+import * as Clipboard from 'expo-clipboard';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   Image,
   SafeAreaView,
@@ -13,6 +17,7 @@ import {
 } from 'react-native';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/auth';
+import { useSubscription } from '@/context/subscription';
 import { PYTHON_SERVICE_URL } from '@/constants/config';
 
 const { width } = Dimensions.get('window');
@@ -40,6 +45,7 @@ export default function ProjectionScreen() {
   const { scanId, scanImageUrl } = useLocalSearchParams<{ scanId: string; scanImageUrl: string }>();
   const router = useRouter();
   const { user } = useAuth();
+  const { isSubscribed } = useSubscription();
 
   const [selectedScenario, setSelectedScenario] = useState<ScenarioKey>('no_action');
   const [scenarioData, setScenarioData] = useState<Record<ScenarioKey, ScenarioData>>({
@@ -49,6 +55,8 @@ export default function ProjectionScreen() {
   });
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
 
   useEffect(() => {
     if (scanId) loadExisting();
@@ -114,6 +122,48 @@ export default function ProjectionScreen() {
     }
   };
 
+  const handleShare = async () => {
+    const url12m = byTimeframe[12];
+    if (!url12m) return;
+    setSharing(true);
+    try {
+      const res = await fetch(`${PYTHON_SERVICE_URL}/watermark-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_url: url12m }),
+      });
+      if (!res.ok) throw new Error('Watermark request failed');
+      const { image_base64 } = await res.json();
+
+      const tempPath = `${FileSystem.cacheDirectory}hairline_projection_12m.jpg`;
+      await FileSystem.writeAsStringAsync(tempPath, image_base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(tempPath, {
+          mimeType: 'image/jpeg',
+          UTI: 'public.jpeg',
+          dialogTitle: 'Share your hairline projection',
+        });
+      } else {
+        Alert.alert('Sharing unavailable', 'Your device does not support sharing.');
+      }
+    } catch {
+      Alert.alert('Share failed', 'Could not prepare the image for sharing. Make sure the Python service is running.');
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const handleCopyLink = async () => {
+    const url12m = byTimeframe[12];
+    if (!url12m) return;
+    await Clipboard.setStringAsync(url12m);
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+  };
+
   const currentData = scenarioData[selectedScenario];
   const byTimeframe: Record<number, string> = {};
   for (const p of currentData.projections) {
@@ -122,6 +172,7 @@ export default function ProjectionScreen() {
 
   const isGenerated = currentData.loaded;
   const accentColor = SCENARIO_COLORS[selectedScenario];
+  const has12m = !!byTimeframe[12];
 
   return (
     <SafeAreaView style={styles.container}>
@@ -174,7 +225,9 @@ export default function ProjectionScreen() {
               <Image source={{ uri: byTimeframe[tf] }} style={styles.image} resizeMode="cover" />
             ) : (
               <View style={styles.placeholderCard}>
-                <Text style={styles.placeholderText}>Not generated yet</Text>
+                <Text style={styles.placeholderText}>
+                  {isSubscribed ? 'Not generated yet' : 'Pro required'}
+                </Text>
               </View>
             )}
           </TimelineCard>
@@ -186,14 +239,40 @@ export default function ProjectionScreen() {
           </View>
         )}
 
-        <View style={{ height: 110 }} />
+        <View style={{ height: 140 }} />
       </ScrollView>
 
       <View style={styles.footer}>
-        {isGenerated && !generating ? (
-          <TouchableOpacity style={styles.regenerateButton} onPress={handleGenerate}>
-            <Text style={styles.regenerateText}>Regenerate</Text>
+        {!isSubscribed ? (
+          <TouchableOpacity style={styles.generateButton} onPress={() => router.push('/paywall')}>
+            <Text style={styles.generateButtonText}>Unlock Projections — Go Pro</Text>
           </TouchableOpacity>
+        ) : isGenerated && !generating ? (
+          <>
+            {has12m && (
+              <View style={styles.shareRow}>
+                <TouchableOpacity
+                  style={[styles.shareButton, sharing && styles.generateButtonDisabled]}
+                  onPress={handleShare}
+                  disabled={sharing}
+                >
+                  {sharing ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <Text style={styles.shareButtonText}>Share 12mo Projection</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.copyLinkButton} onPress={handleCopyLink}>
+                  <Text style={styles.copyLinkText}>
+                    {linkCopied ? 'Copied!' : 'Copy Link'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            <TouchableOpacity style={styles.regenerateButton} onPress={handleGenerate}>
+              <Text style={styles.regenerateText}>Regenerate</Text>
+            </TouchableOpacity>
+          </>
         ) : (
           <TouchableOpacity
             style={[styles.generateButton, generating && styles.generateButtonDisabled]}
@@ -305,6 +384,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0a0a0a',
     borderTopWidth: 1,
     borderTopColor: '#1a1a1a',
+    gap: 10,
   },
   generateButton: {
     backgroundColor: '#0a7ea4',
@@ -315,6 +395,26 @@ const styles = StyleSheet.create({
   generateButtonDisabled: { opacity: 0.6 },
   generateButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
   generatingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  regenerateButton: { paddingVertical: 14, alignItems: 'center' },
+  shareRow: { flexDirection: 'row', gap: 10, alignItems: 'center' },
+  shareButton: {
+    flex: 1,
+    backgroundColor: '#0a7ea4',
+    borderRadius: 14,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shareButtonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  copyLinkButton: {
+    backgroundColor: '#1a1a1a',
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#2a2a2a',
+  },
+  copyLinkText: { color: '#bbb', fontSize: 14, fontWeight: '600' },
+  regenerateButton: { paddingVertical: 10, alignItems: 'center' },
   regenerateText: { color: '#444', fontSize: 14 },
 });

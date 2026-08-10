@@ -5,6 +5,7 @@ import { useEffect } from 'react';
 import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '@/context/auth';
+import { SubscriptionProvider } from '@/context/subscription';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 function InitialLayout() {
@@ -27,6 +28,7 @@ function InitialLayout() {
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="(auth)" />
       <Stack.Screen name="compare" options={{ presentation: 'modal' }} />
+      <Stack.Screen name="paywall" options={{ presentation: 'modal' }} />
     </Stack>
   );
 }
@@ -37,7 +39,9 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AuthProvider>
-        <InitialLayout />
+        <SubscriptionProvider>
+          <InitialLayout />
+        </SubscriptionProvider>
       </AuthProvider>
       <StatusBar style="auto" />
     </ThemeProvider>

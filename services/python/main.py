@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import math
 import os
@@ -508,6 +509,56 @@ async def generate_projection(req: ProjectionRequest):
         projections.append({"timeframe": tf, "image_url": pub_url})
 
     return {"projections": projections}
+
+
+class WatermarkRequest(BaseModel):
+    image_url: str
+
+
+@app.post("/watermark-image")
+async def watermark_image(req: WatermarkRequest):
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(req.image_url)
+    if r.status_code != 200:
+        raise HTTPException(400, "Failed to download image")
+
+    from PIL import ImageDraw, ImageFont
+
+    img = PILImage.open(io.BytesIO(r.content)).convert("RGBA")
+    w, h = img.size
+
+    text = "Hairline OS"
+    try:
+        font = ImageFont.load_default(size=22)
+    except TypeError:
+        font = ImageFont.load_default()
+
+    # Measure text
+    dummy = PILImage.new("RGBA", (1, 1))
+    dummy_draw = ImageDraw.Draw(dummy)
+    bbox = dummy_draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+
+    pad = 10
+    x = w - text_w - pad * 2
+    y = h - text_h - pad * 2
+
+    # Semi-transparent dark background
+    overlay = PILImage.new("RGBA", (w, h), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle(
+        [x - pad, y - pad // 2, x + text_w + pad, y + text_h + pad // 2],
+        fill=(0, 0, 0, 160),
+    )
+    overlay_draw.text((x, y), text, fill=(255, 255, 255, 220), font=font)
+
+    watermarked = PILImage.alpha_composite(img, overlay).convert("RGB")
+
+    buf = io.BytesIO()
+    watermarked.save(buf, format="JPEG", quality=90)
+    encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return {"image_base64": encoded}
 
 
 _STATUS_RANK = {"stable": 0, "slight_recession": 1, "moderate": 2}

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -10,8 +10,9 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { File } from 'expo-file-system';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth } from '@/context/auth';
+import { useSubscription } from '@/context/subscription';
 import { supabase } from '@/lib/supabase';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -20,10 +21,23 @@ const GUIDE_HEIGHT = GUIDE_WIDTH * 1.1;
 
 export default function CameraScreen() {
   const { user } = useAuth();
+  const { isSubscribed } = useSubscription();
   const router = useRouter();
   const cameraRef = useRef<CameraView>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [uploading, setUploading] = useState(false);
+  const [scanCount, setScanCount] = useState<number | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!user) return;
+      supabase
+        .from('scans')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .then(({ count }) => setScanCount(count ?? 0));
+    }, [user, isSubscribed])
+  );
 
   if (!permission) {
     return <View style={styles.container} />;
@@ -38,6 +52,23 @@ export default function CameraScreen() {
         </Text>
         <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
           <Text style={styles.permissionButtonText}>Grant Access</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (scanCount !== null && scanCount >= 1 && !isSubscribed) {
+    return (
+      <View style={styles.permissionContainer}>
+        <Text style={styles.permissionTitle}>Upgrade to Pro</Text>
+        <Text style={styles.permissionSub}>
+          You've used your free scan. Upgrade to Hairline OS Pro to take unlimited scans and track your progress over time.
+        </Text>
+        <TouchableOpacity
+          style={styles.permissionButton}
+          onPress={() => router.push('/paywall')}
+        >
+          <Text style={styles.permissionButtonText}>Unlock Pro</Text>
         </TouchableOpacity>
       </View>
     );
